@@ -1,0 +1,216 @@
+/**
+ * Enhanced Android Crypto Interceptor v3.0
+ * Focus on API requests and sensitive data
+ */
+
+const CONFIG = {
+    colors: {
+        info: '\x1b[36m',     // cyan
+        api: '\x1b[32m',      // green
+        warn: '\x1b[33m',     // yellow
+        error: '\x1b[31m',    // red
+        reset: '\x1b[0m'
+    },
+
+    // API 관련 키워드 (이 키워드가 포함된 요청만 표시)
+    apiKeywords: [
+        'channel_code',
+        'phone_number',
+        'name',
+        'rrn',
+        'account',
+        'birth',
+        'telecom',
+        'password',
+        'pin',
+        'card',
+        'bank'
+    ],
+
+    // 무시할 키워드 (이 키워드가 포함된 요청은 무시)
+    ignoreKeywords: [
+        'af_timestamp',
+        'appsflyerKey',
+        'eventName',
+        'platformextension',
+        'prev_event',
+        'eventValue',
+        'customData'
+    ]
+};
+
+class Logger {
+    static info(message) {
+        console.log(`${CONFIG.colors.info}${message}${CONFIG.colors.reset}`);
+    }
+
+    static api(message) {
+        console.log(`${CONFIG.colors.api}${message}${CONFIG.colors.reset}`);
+    }
+
+    static warn(message) {
+        console.log(`${CONFIG.colors.warn}${message}${CONFIG.colors.reset}`);
+    }
+
+    static error(message) {
+        console.log(`${CONFIG.colors.error}${message}${CONFIG.colors.reset}`);
+    }
+    
+    static divider() {
+        console.log("----------------------------------------");
+    }
+}
+
+class CryptoUtils {
+    static STRING = Java.use("java.lang.String");
+    static BASE64 = Java.use("java.util.Base64");
+    
+    static bytesToString(bytes) {
+        if (!bytes) return null;
+        try {
+            return this.STRING.$new(bytes).toString();
+        } catch (e) {
+            return null;
+        }
+    }
+    
+    static bytesToBase64(bytes) {
+        if (!bytes) return null;
+        try {
+            if (bytes.$className === "[B" || Array.isArray(bytes)) {
+                return this.BASE64.getEncoder().encodeToString(bytes);
+            }
+            if (typeof bytes === "number") {
+                return this.BASE64.getEncoder().encodeToString([bytes & 0xff]);
+            }
+            return this.BASE64.getEncoder().encodeToString(Array.from(bytes));
+        } catch (e) {
+            return null;
+        }
+    }
+
+    static base64ToBytes(base64) {
+        if (!base64) return null;
+        try {
+            return this.BASE64.getDecoder().decode(base64);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    static isRelevantJSON(str) {
+        if (!str || typeof str !== 'string') return false;
+        str = str.trim();
+        
+        // JSON 형식이 아닌 경우 제외
+        if (!str.startsWith('{') && !str.startsWith('[')) return false;
+        
+        try {
+            const data = JSON.parse(str);
+            
+            // 무시할 키워드가 있는지 확인
+            const hasIgnoreKeyword = CONFIG.ignoreKeywords.some(keyword => 
+                JSON.stringify(data).toLowerCase().includes(keyword.toLowerCase())
+            );
+            if (hasIgnoreKeyword) return false;
+
+            // API 관련 키워드가 있는지 확인
+            return CONFIG.apiKeywords.some(keyword => 
+                JSON.stringify(data).toLowerCase().includes(keyword.toLowerCase())
+            );
+        } catch {
+            return false;
+        }
+    }
+}
+
+class CryptoInterceptor {
+    static #processedRequests = new Set();
+    static #index = 1;
+
+    static formatJSON(jsonStr) {
+        try {
+            const parsedData = JSON.parse(jsonStr);
+            return JSON.stringify(parsedData, null, 2);
+        } catch {
+            return jsonStr;
+        }
+    }
+
+    static logInterception(inputBase64, inputStr, outputBase64) {
+        if (!CryptoUtils.isRelevantJSON(inputStr)) return;
+        
+        // 중복 요청 체크
+        const requestHash = `${inputBase64}${outputBase64}`;
+        if (this.#processedRequests.has(requestHash)) return;
+        this.#processedRequests.add(requestHash);
+
+        Logger.divider();
+        Logger.api(`[${this.#index}] API Request Intercepted`);
+        Logger.info("[Input Base64]");
+        console.log(inputBase64);
+        Logger.info("[Input JSON]");
+        console.log(this.formatJSON(inputStr));
+        Logger.info("[Output Base64]");
+        console.log(outputBase64);
+        Logger.divider();
+
+        this.#index++;
+
+        // Set이 너무 커지는 것을 방지
+        if (this.#processedRequests.size > 1000) {
+            this.#processedRequests.clear();
+        }
+    }
+
+    static hookCipher() {
+        const cipher = Java.use("javax.crypto.Cipher");
+        
+        // doFinal 메소드 후킹
+        [
+            ["[B"],
+            ["[B", "int"],
+            ["[B", "int", "int"],
+            ["[B", "int", "int", "[B"],
+            ["[B", "int", "int", "[B", "int"]
+        ].forEach(params => {
+            cipher.doFinal.overload(...params).implementation = function(...args) {
+                const input = args[0];
+                const output = this.doFinal.overload(...params).call(this, ...args);
+
+                CryptoInterceptor.logInterception(
+                    CryptoUtils.bytesToBase64(input),
+                    CryptoUtils.bytesToString(input),
+                    CryptoUtils.bytesToBase64(output)
+                );
+
+                return output;
+            };
+        });
+
+        Logger.info("Cipher hooks installed");
+    }
+
+    static initialize() {
+        if (!Java.available) {
+            Logger.error("Java is not available");
+            return;
+        }
+
+        Java.perform(() => {
+            this.hookCipher();
+            Logger.api("API Request monitoring started...");
+        });
+    }
+}
+
+// Main execution
+setTimeout(() => {
+    Logger.divider();
+    Logger.info("Starting Enhanced Crypto Interceptor...");
+    Logger.info("Focus: API requests and sensitive data");
+    Logger.info(`Monitored keywords: ${CONFIG.apiKeywords.join(', ')}`);
+    Logger.divider();
+    
+    CryptoInterceptor.initialize();
+}, 0);
